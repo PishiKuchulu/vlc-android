@@ -22,10 +22,14 @@ jobs:
         with: {packages: "platform-tools platforms;android-36 build-tools;36.0.0 ndk;21.4.7075529"}
       - name: Decode and verify keystore
         env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_B64_A: ${{ secrets.KEYSTORE_B64_A }}
+          KEYSTORE_B64_B: ${{ secrets.KEYSTORE_B64_B }}
         run: |
           set -euo pipefail
-          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/vlc-release.p12"
+          printf '%s%s' "$KEYSTORE_B64_A" "$KEYSTORE_B64_B" | tr -d '[:space:]' > "$RUNNER_TEMP/ks.b64"
+          L=$(wc -c < "$RUNNER_TEMP/ks.b64"); echo "keystore base64 length: $L (expected 4420)"
+          [ "$L" = "4420" ] || { echo "keystore base64 length mismatch"; exit 1; }
+          base64 -d "$RUNNER_TEMP/ks.b64" > "$RUNNER_TEMP/vlc-release.p12"
           S=$(sha256sum "$RUNNER_TEMP/vlc-release.p12" | cut -d' ' -f1); echo "keystore sha256: $S"
           [ "$S" = "$KS_SHA" ] || { echo "keystore hash mismatch"; exit 1; }
           keytool -list -v -keystore "$RUNNER_TEMP/vlc-release.p12" -storetype PKCS12 -storepass "$PASSWORD_KEYSTORE" -alias vlc > "$RUNNER_TEMP/kt.txt"
