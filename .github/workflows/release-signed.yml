@@ -1,0 +1,66 @@
+name: Signed Release
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag: {description: "Release tag to create", required: true, default: "v3.7.2-signed.1"}
+permissions: {contents: write}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PASSWORD_KEYSTORE: ${{ secrets.KEYSTORE_PASSWORD }}
+      KS_SHA: "38e0df8c2a9460dc5e73347e0aaae8a7f57a569ce6e27d45ff436ee6f531c279"
+      CERT_FP: "c5765fb690a8f1881d50bd498e6a20f33b7a9f4b90423be743305a615a8a113b"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; df -h /
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: "17"}
+      - uses: android-actions/setup-android@v3
+        with: {packages: "platform-tools platforms;android-36 build-tools;36.0.0 ndk;21.4.7075529"}
+      - name: Decode and verify keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/vlc-release.p12"
+          S=$(sha256sum "$RUNNER_TEMP/vlc-release.p12" | cut -d' ' -f1); echo "keystore sha256: $S"
+          [ "$S" = "$KS_SHA" ] || { echo "keystore hash mismatch"; exit 1; }
+          keytool -list -v -keystore "$RUNNER_TEMP/vlc-release.p12" -storetype PKCS12 -storepass "$PASSWORD_KEYSTORE" -alias vlc > "$RUNNER_TEMP/kt.txt"
+          grep -E "Alias name|Valid from|SHA256:" "$RUNNER_TEMP/kt.txt"
+          F=$(grep "SHA256:" "$RUNNER_TEMP/kt.txt" | head -1 | sed 's/.*SHA256: //' | tr -d ':' | tr 'A-F' 'a-f'); echo "cert sha256: $F"
+          [ "$F" = "$CERT_FP" ] || { echo "cert fingerprint mismatch"; exit 1; }
+      - name: Signing props
+        run: |
+          printf '\nkeyStoreFile=%s/vlc-release.p12\nstorealias=vlc\n' "$RUNNER_TEMP" >> gradle.properties
+          printf 'sdk.dir=%s\nandroid.ndkPath=%s/ndk/21.4.7075529\nandroid.ndkFullVersion=21.4.7075529\n' "$ANDROID_SDK_ROOT" "$ANDROID_SDK_ROOT" > local.properties
+          echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+      - name: Init build system
+        run: ./buildsystem/compile.sh --init
+      - name: Build signed release
+        run: ./gradlew assembleSignedRelease --stacktrace
+      - name: Verify APKs and collect
+        run: |
+          set -euo pipefail
+          A="$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner"; O="$RUNNER_TEMP/release-apks"; mkdir -p "$O"
+          for apk in application/app/build/outputs/apk/signedRelease/*.apk; do
+            "$A" verify --print-certs "$apk" > "$RUNNER_TEMP/c.txt"; cat "$RUNNER_TEMP/c.txt"
+            F=$(grep -i "SHA-256 digest" "$RUNNER_TEMP/c.txt" | head -1 | sed 's/.*: //' | tr -d ':'); echo "$apk signer: $F"
+            [ "$(echo "$F" | tr 'A-F' 'a-f')" = "$CERT_FP" ] || { echo "signer mismatch"; exit 1; }
+            cp "$apk" "$O/"
+          done
+          cd "$O"; ls -lh; for f in *.apk; do sha256sum "$f" > "$f.sha256"; done; cat *.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vlc-signed-release-apks
+          path: ${{ runner.temp }}/release-apks/*
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: "VLC Android ${{ inputs.release_tag }} (signed)"
+          files: "${{ runner.temp }}/release-apks/*"
+          fail_on_unmatched_files: true
