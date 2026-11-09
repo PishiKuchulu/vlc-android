@@ -43,7 +43,10 @@ jobs:
           echo "ANDROID_NDK=$ANDROID_SDK_ROOT/ndk/21.4.7075529" >> "$GITHUB_ENV"
           echo "ANDROID_SDK=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
       - name: Init build system
-        run: ./buildsystem/compile.sh --init
+        run: |
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          ./buildsystem/compile.sh --init
       - name: Build signed release
         run: ./gradlew assembleSignedRelease --stacktrace
       - name: Verify APKs and collect
